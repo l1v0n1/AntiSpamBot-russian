@@ -1,25 +1,62 @@
-# Antibotbot for Telegram groups
+# AntiSpamBot для групп Telegram
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](./LICENSE)  
 
-The bot is currently running as [@ArchCNAntiSpamBot](http://telegram.me/ArchCNAntiSpamBot).  
+Бот предназначен для защиты групп Telegram от спама, ботов и нежелательного контента.
 
-To run the bot yourself, you will need: 
-- Python 3.8+
-- The [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) module
+## Основные функции
+- Проверка новых пользователей с помощью CAPTCHA в виде вопроса с вариантами ответов
+- Автоматическая блокировка пользователей, не прошедших проверку за указанное время
+- Подтверждение новых ботов администраторами группы
+- Защита от флуда при массовом присоединении пользователей
+- Удаление системных сообщений и сообщений о выходе пользователей
+- Настройки для каждой группы отдельно
 
-## Deploying
-### With bot api only
-1. Copy `config.py.example` to `config.py`.  
-2. Get a bot [token](https://core.telegram.org/bots#6-botfather).  
-3. Change TOKEN to the one you just got and SALT to whatever string you want inside [config.py](https://github.com/isjerryxiao/AntiSpamBot/blob/master/config.py.example#L2).  
-4. You're ready to go. Install requirements with `pip3 install -r requirements.txt`    
-   and then launch the bot with `python3 bot.py`.  
+## Команды бота
+| Команда | Описание |
+|---------|----------|
+| `/start` | Показывает приветственное сообщение и информацию о функциях бота |
+| `/source` | Отображает ссылку на исходный код и версию бота |
+| `/settings` | Открывает меню настроек (только для администраторов) |
+| `/admins` или `/admin` | Упоминает всех администраторов группы |
+| `/ban` | Блокирует пользователя (только для администраторов) |
+| `/cancel` | Отменяет процесс настройки (только для администраторов) |
 
-### With mtproto userbot api
-#### This is only useful when you have an admin account with no add_new_admin permission.
-1. Get a bot token and modify TOKEN as well as SALT inside config.py as mentioned above.  
-2. Get the [API ID and hash](https://docs.telethon.dev/en/latest/basic/signing-in.html#signing-in) for your telegram user account.  
-3. Put your api_id and hash [here](https://github.com/isjerryxiao/AntiSpamBot/blob/master/config.py.example#L52).  
-4. Set [USER_BOT_BACKEND](https://github.com/isjerryxiao/AntiSpamBot/blob/master/config.py.example#L51) to `True`.  
-5. You're ready to go. Install requirements with `pip3 install -r requirements-userbot.txt`    
-   and then launch the bot with `python3 bot.py`.  
+## Настройки бота
+Администраторы могут настроить следующие параметры, используя команду `/settings`:
+
+- **Приветствие**: Текст приветственного сообщения для новых пользователей
+- **Вопросы проверки**: Вопросы с вариантами ответов для проверки новых участников
+- **Сообщение успешной проверки**: Текст, отображаемый при успешном прохождении проверки
+- **Сообщение при отсутствии необходимости в проверке**: Текст для пользователей, нажимающих кнопки не своей проверки
+- **Время ожидания проверки**: Время в секундах для прохождения проверки (1-3600)
+- **Минимальное динамическое время проверки**: Минимальное значение для динамического времени проверки
+- **Время разбана**: Время автоматического разбана после неудачной проверки (0 для постоянного бана)
+- **Защита от флуда**: Количество новых пользователей для включения режима защиты от флуда
+- **Удаление сообщений о выходе**: Включение/отключение удаления сообщений о выходе пользователей
+- **Удаление системных сообщений**: Включение/отключение удаления всех системных сообщений
+
+## Установка и настройка
+
+### Способ 1: Только с Bot API
+1. Скопируйте `config.py.example` в `config.py`.  
+2. Получите [токен бота](https://core.telegram.org/bots#6-botfather).  
+3. Измените TOKEN на полученный токен и SALT на любую строку в файле [config.py](https://github.com/l1v0n1/AntiSpamBot-russian/blob/master/config.py.example#L2).  
+4. Установите зависимости: `pip3 install -r requirements.txt`    
+5. Запустите бота: `python3 bot.py`.  
+
+### Способ 2: С пользовательским MTProto API
+#### Полезно, когда у вас есть административный аккаунт без права добавления новых администраторов
+1. Получите токен бота и измените TOKEN и SALT в config.py, как указано выше.
+2. Получите [API ID и хеш](https://docs.telethon.dev/en/latest/basic/signing-in.html#signing-in) для своего аккаунта Telegram.
+3. Укажите свои api_id и hash [здесь](https://github.com/l1v0n1/AntiSpamBot-russian/blob/master/config.py.example#L52).
+4. Установите [USER_BOT_BACKEND](https://github.com/l1v0n1/AntiSpamBot-russian/blob/master/config.py.example#L51) в значение `True`.
+5. Установите зависимости: `pip3 install -r requirements-userbot.txt`
+6. Запустите бота: `python3 bot.py`.
+
+## Использование
+1. Добавьте бота в вашу группу.
+2. Сделайте бота администратором с правами на блокировку пользователей.
+3. Настройте бота с помощью команды `/settings`.
+
+## Вклад в проект
+Пулл-реквесты приветствуются. Пожалуйста, убедитесь, что ваш код соответствует стилю проекта.

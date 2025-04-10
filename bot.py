@@ -126,27 +126,26 @@ def start(update: Update, context: CallbackContext) -> None:
         logger.info(f'[!] userfilter module reloaded by {update.effective_user.id}')
         update.message.reply_text('reloaded')
         return
-    update.message.reply_text((f'你好{update.message.from_user.first_name}'
-                                '，机器人目前功能如下:\n'
-                                '1.新加群用户需要在一定时间内点击'
-                                '按钮验证，否则将被封禁一段时间。\n'
-                                '若该用户为群成员邀请，则邀请人也可以帮助验证。\n'
-                                '2.新加群的bot需要拉入用户或管理员确认。\n'
-                                '3.防刷屏功能: 当短时间内加入用户超过一定数量时，'
-                                '机器人会尽可能少地发送消息以防影响正常聊天。\n'
-                                '要让其正常工作，请将这个机器人添加进一个群组，'
-                                '设为管理员并打开封禁权限。\n\n'
-                                '管理员可使用 /settings 自定义设置。\n'
-                                '使用 /ban 封禁用户。'),
-                              isgroup=update.message.chat.type != 'private')
+    update.message.reply_text((f'Привет, {update.message.from_user.first_name}'
+                                ', функции бота:\n'
+                                '1. Новые пользователи должны пройти проверку за определенное время, '
+                                'иначе они будут заблокированы.\n'
+                                'Если пользователь был приглашен другим участником, то пригласивший '
+                                'также может помочь с проверкой.\n'
+                                '2. Новые боты должны быть подтверждены пользователем или администратором.\n'
+                                '3. Защита от флуда: когда много пользователей присоединяются за короткое время, '
+                                'бот отправляет минимум сообщений, чтобы не мешать общению.\n'
+                                'Для работы бота добавьте его в группу, сделайте администратором '
+                                'и предоставьте права на блокировку пользователей.\n\n'
+                                'Администраторы могут использовать /settings для настройки.\n'
+                                'Используйте /ban для блокировки пользователей.'))
 
 @run_async
 @collect_error
 @filter_old_updates
 def source(update: Update, context: CallbackContext) -> None:
     logger.debug(f"Source from {update.message.from_user.id}")
-    update.message.reply_text(f'Source code: https://github.com/isjerryxiao/AntiSpamBot\nVersion: {VER}',
-                              isgroup=update.message.chat.type != 'private')
+    update.message.reply_text(f'Исходный код: https://github.com/l1v0n1/AntiSpamBot-russian\nВерсия: {VER}')
 
 class chatSettings:
     def __init__(self, datadict):
@@ -167,6 +166,10 @@ class chatSettings:
             return choice(data)
     def get_clg_accecpt_deny(self):
         l = self.choice('CLG_QUESTIONS')
+        if l is None:
+            # Возвращаем значение по умолчанию, если нет вопросов
+            default_question = CHAT_SETTINGS_DEFAULT['CLG_QUESTIONS'][0]
+            return (default_question[0], default_question[1], default_question[2:])
         return (l[0], l[1], l[2:])
     def __process(self, name: str, inputstr: str) -> str:
         if name == 'WELCOME_WORDS':
@@ -207,7 +210,7 @@ class chatSettings:
                 return False
             else:
                 self.__data[name] = seconds
-        elif name in ('DEL_LEAVE_MSG',):
+        elif name in ('DEL_LEAVE_MSG', 'DEL_SERVICE_MSG'):
             self.__data[name] = not self.get(name)
         else:
             raise NotImplementedError(f"{name} is unknown")
@@ -304,7 +307,7 @@ def ban_user(update: Update, context: CallbackContext) -> None:
     if update.message.from_user.id not in getAdminIds(context.bot, update.message.chat.id):
         return
     if not (repl_msg := update.message.reply_to_message):
-        update.message.reply_text("Please reply to a message.")
+        update.message.reply_text("Пожалуйста, ответьте на сообщение пользователя.")
         return
     if repl_msg.new_chat_members:
         user_ids = [user.id for user in repl_msg.new_chat_members]
@@ -329,7 +332,7 @@ def ban_user(update: Update, context: CallbackContext) -> None:
     chat_id: int = update.message.chat.id
     user_ids: List[int] = [uid for uid in user_ids if uid not in getAdminIds(context.bot, chat_id)]
     if not user_ids:
-        update.message.reply_text("Cannot ban an admin.")
+        update.message.reply_text("Невозможно заблокировать администратора.")
         return
     u_mgr: UserManager = context.chat_data.setdefault('u_mgr', UserManager(chat_id))
     fldlock: Lock = FLD_LOCKS.setdefault(chat_id, Lock())
@@ -575,13 +578,12 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
                         msg: Message = bot.send_message(chat_id=chat_id,
                                         reply_to_message_id=join_msgid,
                                         text=('' if not flag_flooding else \
-                                                    f'待验证用户: {len(u_mgr)+1}名\n') + \
+                                                    f'Ожидающих проверки пользователей: {len(u_mgr)+1}\n') + \
                                                 settings.choice('WELCOME_WORDS').replace(
                                                 '%time%', f"{RCLG_TIMEOUT}") + \
                                                 f"\n{CLG_QUESTION}",
                                         reply_markup=InlineKeyboardMarkup(buttons),
-                                        disable_notification=True,
-                                        isgroup=False) # These messages are essential and should not be delayed.
+                                        disable_notification=True) # These messages are essential and should not be delayed.
                     except TelegramError:
                         pass
                     else:
@@ -627,8 +629,8 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
             raise TelegramError('')
     except TelegramError:
         bot.send_message(chat_id=chat_id,
-                text="发现新加入的成员: {0} ，但机器人不是管理员导致无法实施有效行动。"
-                     "请将机器人设为管理员并打开封禁权限。".format(fName(user, markdown=True)),
+                text="Обнаружен новый участник: {0}, но бот не является администратором и не может выполнить необходимые действия. "
+                     "Пожалуйста, назначьте бота администратором и предоставьте права на блокировку пользователей.".format(fName(user, markdown=True)),
                 parse_mode="Markdown")
         logger.error((f"Cannot restrict {user.id} and {invite_user.id} in "
                       f"the group {chat_id}{' [bot]' if user.is_bot else ''}"))
@@ -645,7 +647,7 @@ def at_admins(update: Update, context: CallbackContext) -> None:
     chat_id: int = update.message.chat.id
     last_at_admins: float = context.chat_data.setdefault('last_at_admins', 0.0)
     if time() - last_at_admins < AT_ADMINS_RATELIMIT:
-        notice: Message = update.message.reply_text(f"请再等待{AT_ADMINS_RATELIMIT - (time() - last_at_admins): .3f}秒")
+        notice: Message = update.message.reply_text(f"Пожалуйста, подождите {AT_ADMINS_RATELIMIT - (time() - last_at_admins): .3f} секунд")
         def delete_notice(_: CallbackContext) -> None:
             for _msg_id in (update.message.message_id, notice.message_id):
                 delete_message(context, chat_id=chat_id, message_id=_msg_id)
@@ -686,11 +688,11 @@ def write_settings(update: Update, context: CallbackContext) -> None:
     ret = settings.put(item, '\n'.join(params))
     context.chat_data['settings_call'] = None
     if ret:
-        settings_menu(update, context, additional_text="设置成功\n\n")
+        settings_menu(update, context, additional_text="Настройки успешно сохранены\n\n")
         context.chat_data['chat_settings'] = settings.to_dict()
         ppersistence.flush()
     else:
-        settings_menu(update, context, additional_text="您的输入有误，请重试\n\n")
+        settings_menu(update, context, additional_text="Ваш ввод некорректен, попробуйте еще раз\n\n")
 
 @run_async
 @collect_error
@@ -700,13 +702,13 @@ def settings_menu(update: Update, context: CallbackContext, additional_text: str
     if chat_type == 'channel':
         return
     elif chat_type == 'private':
-        update.message.reply_text('设置仅在群聊中可用', isgroup=False)
+        update.message.reply_text('Настройки доступны только в группах')
         return
     if update.message.from_user.id in getAdminIds(context.bot, update.message.chat.id):
         buttons = [
             [InlineKeyboardButton(text=CHAT_SETTINGS_HELP[item][0], callback_data = f"settings {item}")]
         for item in CHAT_SETTINGS_DEFAULT]
-        update.message.reply_text(text=f"{additional_text}请选择一项设置",
+        update.message.reply_text(text=f"{additional_text}Выберите настройку",
                                   reply_markup=InlineKeyboardMarkup(buttons))
 
 @run_async
@@ -717,9 +719,9 @@ def settings_cancel(update: Update, context: CallbackContext) -> None:
         settings_call = context.chat_data.get('settings_call', None)
         if settings_call:
             context.chat_data['settings_call'] = None
-            update.message.reply_text('取消成功')
+            update.message.reply_text('Настройка отменена')
         else:
-            update.message.reply_text('今日无事可做')
+            update.message.reply_text('Нет активных настроек для отмены')
 
 @run_async
 @collect_error
@@ -740,7 +742,7 @@ def settings_callback(update: Update, context: CallbackContext) -> None:
             buttons = [
                 [InlineKeyboardButton(text=CHAT_SETTINGS_HELP[item][0], callback_data = f"settings {item}")]
             for item in CHAT_SETTINGS_DEFAULT]
-            message.edit_text(text="请选择一项设置",
+            message.edit_text(text="Выберите настройку",
                               reply_markup=InlineKeyboardMarkup(buttons))
             return
         elif len(args) not in (2, 3):
@@ -754,22 +756,22 @@ def settings_callback(update: Update, context: CallbackContext) -> None:
             item = args[1]
             setting_type: str = CHAT_SETTINGS_HELP.get(item)[2]
             settings = chatSettings(context.chat_data.get('chat_settings', dict()))
-            helptext = f"设置项: {CHAT_SETTINGS_HELP.get(item)[0]}\n"
-            helptext += "当前设置: "
+            helptext = f"Настройка: {CHAT_SETTINGS_HELP.get(item)[0]}\n"
+            helptext += "Текущее значение: "
             current_value = settings.get(item)
-            buttons = [[InlineKeyboardButton(text="恢复默认", callback_data = f"{' '.join(args[:2])} default")]]
+            buttons = [[InlineKeyboardButton(text="Восстановить значение по умолчанию", callback_data = f"{' '.join(args[:2])} default")]]
             # handle default
             if len(args) == 3 and args[2] == 'default':
                 callback_answered = True
                 if settings.put(item, ''):
                     context.chat_data['chat_settings'] = settings.to_dict()
                     ppersistence.flush()
-                    update.callback_query.answer('成功', show_alert=True)
+                    update.callback_query.answer('Успешно', show_alert=True)
                     # refresh
                     settings = chatSettings(context.chat_data.get('chat_settings', dict()))
                     current_value = settings.get(item)
                 else:
-                    update.callback_query.answer('失败', show_alert=True)
+                    update.callback_query.answer('Ошибка', show_alert=True)
             if setting_type == "array":
                 assert item == 'CLG_QUESTIONS'
                 # handle delete
@@ -783,58 +785,58 @@ def settings_callback(update: Update, context: CallbackContext) -> None:
                     if settings.delete_clg_question(index):
                         context.chat_data['chat_settings'] = settings.to_dict()
                         ppersistence.flush()
-                        update.callback_query.answer('成功', show_alert=True)
+                        update.callback_query.answer('Успешно', show_alert=True)
                         # refresh
                         settings = chatSettings(context.chat_data.get('chat_settings', dict()))
                         current_value = settings.get(item)
                     else:
-                        update.callback_query.answer('失败', show_alert=True)
+                        update.callback_query.answer('Ошибка', show_alert=True)
                 if len(current_value) < 30:
-                    buttons += [[InlineKeyboardButton(text="添加新项", callback_data = f"{' '.join(args[:2])} set")]]
+                    buttons += [[InlineKeyboardButton(text="Добавить новый", callback_data = f"{' '.join(args[:2])} set")]]
                 for i in range(len(current_value)):
                     name = current_value[i][0]
                     corr_answ = current_value[i][1]
                     fals_answ = current_value[i][2:]
                     if len(current_value) > 1:
-                        buttons.append([InlineKeyboardButton(text=f"删除 {i+1}:{name[:20]}",
+                        buttons.append([InlineKeyboardButton(text=f"Удалить {i+1}:{name[:20]}",
                                                              callback_data = f"{' '.join(args[:2])} {i}")])
-                    helptext += f"\n问题{i+1: >2d} :{name}\n正确答案: {corr_answ}"
+                    helptext += f"\nВопрос{i+1: >2d} :{name}\nПравильный ответ: {corr_answ}"
                     for f in fals_answ:
-                        helptext += f"\n错误答案: {f}"
+                        helptext += f"\nНеправильный ответ: {f}"
             elif setting_type == "bool":
-                buttons += [[InlineKeyboardButton(text="切换状态", callback_data = f"{' '.join(args[:2])} set")]]
-                helptext += f"\n状态: {'已启用' if current_value else '已禁用'}"
+                buttons += [[InlineKeyboardButton(text="Переключить", callback_data = f"{' '.join(args[:2])} set")]]
+                helptext += f"\nСостояние: {'Включено' if current_value else 'Выключено'}"
             elif setting_type in ("str", "int"):
-                buttons += [[InlineKeyboardButton(text="更改", callback_data = f"{' '.join(args[:2])} set")]]
+                buttons += [[InlineKeyboardButton(text="Изменить", callback_data = f"{' '.join(args[:2])} set")]]
                 if type(current_value) is list:
-                    current_value = '\n'.join([f"备选项: {x}" for x in current_value])
+                    current_value = '\n'.join([f"Вариант: {x}" for x in current_value])
                     helptext += '\n'
                 helptext += str(current_value)
             else:
                 raise RuntimeError("should not reach here")
             buttons.append(
-                [InlineKeyboardButton(text='返回', callback_data='settings')]
+                [InlineKeyboardButton(text='Назад', callback_data='settings')]
             )
             helptext += '\n\n'
-            helptext += f"设置说明:\n{CHAT_SETTINGS_HELP.get(item, [None, None])[1]}"
+            helptext += f"Описание:\n{CHAT_SETTINGS_HELP.get(item, [None, None])[1]}"
             if len(args) == 3 and args[2] == 'set':
                 if setting_type == "bool":
                     callback_answered = True
                     if settings.put(item, 'dummy'):
                         context.chat_data['chat_settings'] = settings.to_dict()
                         ppersistence.flush()
-                        update.callback_query.answer('成功', show_alert=True)
+                        update.callback_query.answer('Успешно', show_alert=True)
                         # refresh
                         settings = chatSettings(context.chat_data.get('chat_settings', dict()))
                         current_value = settings.get(item)
-                        newhelptext = f"状态: {'已启用' if current_value else '已禁用'}"
-                        l_helptext = [newhelptext if line.startswith('状态:') else line for line in helptext.split('\n')]
+                        newhelptext = f"Состояние: {'Включено' if current_value else 'Выключено'}"
+                        l_helptext = [newhelptext if line.startswith('Состояние:') else line for line in helptext.split('\n')]
                         helptext = '\n'.join(l_helptext)
                     else:
-                        update.callback_query.answer('失败', show_alert=True)
+                        update.callback_query.answer('Ошибка', show_alert=True)
                     reply_markup = InlineKeyboardMarkup(buttons)
                 else:
-                    helptext += "\n\n您正在设置新选项\n请在120秒内回复格式正确的内容，/cancel 取消设置。"
+                    helptext += "\n\nВы настраиваете новое значение\nПожалуйста, введите корректное значение в течение 120 секунд. Для отмены введите /cancel."
                     context.chat_data['settings_call'] = [time(), user.id, item]
                     reply_markup = None
             else:
@@ -962,6 +964,28 @@ def do_garbage_collection(context: CallbackContext) -> None:
     logger.info((f'Scheduled garbage collection checked {u_checked} users, {m_checked} messages, '
                  f'freed {u_freed} users, {m_freed} messages.'))
 
+@run_async
+@collect_error
+@filter_old_updates
+def service_message(update: Update, context: CallbackContext) -> None:
+    """Обработчик всех системных сообщений."""
+    if not (update.message and update.message.chat):
+        return
+    chat_type: str = update.message.chat.type
+    if chat_type in ('private', 'channel'):
+        return
+    
+    chat_id: int = update.message.chat_id
+    msg_id: int = update.message.message_id
+    settings = chatSettings(context.chat_data.get('chat_settings', dict()))
+    
+    # Проверяем настройку DEL_SERVICE_MSG
+    if settings.get('DEL_SERVICE_MSG'):
+        logger.debug(f'Deleted service message {msg_id} for {chat_id}')
+        delete_message(context, chat_id, msg_id)
+    else:
+        logger.debug(f'Not deleting service message {msg_id} for {chat_id}')
+
 if __name__ == '__main__':
     ppersistence = PicklePersistence(filename=PICKLE_FILE, store_user_data=False, on_flush=True)
     updater = Updater(bot=mqbot, workers=WORKERS, persistence=ppersistence, use_context=True)
@@ -983,8 +1007,27 @@ if __name__ == '__main__':
     updater.dispatcher.add_handler(CommandHandler('ban', ban_user))
     updater.dispatcher.add_handler(CallbackQueryHandler(challenge_verification, pattern=r'clg'))
     updater.dispatcher.add_handler(CallbackQueryHandler(settings_callback, pattern=r'settings'))
+    
+    # Обработчики системных сообщений
     updater.dispatcher.add_handler(MessageHandler(Filters.status_update.new_chat_members, new_members))
     updater.dispatcher.add_handler(MessageHandler(Filters.status_update.left_chat_member, left_member))
+    
+    # Новые обработчики для других системных сообщений
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.new_chat_title, service_message))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.new_chat_photo, service_message))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.delete_chat_photo, service_message))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.pinned_message, service_message))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.chat_created, service_message))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.message_auto_delete_timer_changed, service_message))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.connected_website, service_message))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.proximity_alert_triggered, service_message))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.migrate, service_message))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.voice_chat_scheduled, service_message))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.voice_chat_started, service_message))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.voice_chat_ended, service_message))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.voice_chat_participants_invited, service_message))
+    
+    # Обработчик обычных сообщений должен быть последним
     updater.dispatcher.add_handler(MessageHandler(InvertedFilter(Filters.status_update & \
                                                   Filters.update.channel_posts), new_messages))
     if USER_BOT_BACKEND:

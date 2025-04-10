@@ -38,6 +38,9 @@ logger = logging.getLogger('antispambot')
 
 import subprocess
 def get_gitver() -> str:
+    """
+    Get version from git tags. If git is not available or fails, use the fallback version.
+    """
     try:
         p = subprocess.run(['git', 'describe', '--tags'],
                         env={"LANG": "C"},
@@ -47,10 +50,12 @@ def get_gitver() -> str:
                         encoding='utf-8')
         assert p.returncode == 0
         ver: str = p.stdout.strip()
+        return ver
     except Exception:
-        ver: str = "Unknown"
-    return ver
-VER: str = "1.5.0"
+        return VER  # Return the manually defined version
+
+# Manually defined version (used when git version is unavailable)
+VER: str = "1.6.0"  # Update version number
 
 def error_callback(update: Update, context:CallbackContext) -> None:
     error: Exception = context.error
@@ -91,17 +96,22 @@ def collect_error(func: Callable) -> Callable:
 
 def filter_old_updates(func: Callable[[Update, CallbackContext], Callable]) -> Callable:
     '''
-        do not process very old updates
+    Do not process very old updates (older than 5 minutes)
     '''
     def wrapped(update: Update, context: CallbackContext, *args, **kwargs) -> Any:
+        if not update.effective_message:
+            return func(update, context, *args, **kwargs)
+            
         msg: Message = update.effective_message
         sent_time: datetime = msg.edit_date if msg.edit_date else msg.date
         seconds_from_now: float = (datetime.now(tz=sent_time.tzinfo) - sent_time).total_seconds()
-        if int(seconds_from_now) > 5*60:
-            logger.warning(f'Not processing update {update.update_id} since it\'s too old ({int(seconds_from_now)}).')
+        
+        # Skip processing for old messages
+        if seconds_from_now > 300:  # 5 minutes in seconds (more readable than 5*60)
+            logger.warning(f'Not processing update {update.update_id} since it\'s too old ({int(seconds_from_now)} seconds).')
             return
-        else:
-            return func(update, context, *args, **kwargs)
+            
+        return func(update, context, *args, **kwargs)
     return wrapped
 
 def check_chat_type(update: Update, allowed_types: List[str] = None, notify: bool = True) -> bool:
@@ -113,17 +123,21 @@ def check_chat_type(update: Update, allowed_types: List[str] = None, notify: boo
     :param notify: отправлять ли уведомление если тип не разрешен
     :return: True если тип чата разрешен, иначе False
     '''
+    # Default to group chats if no types specified
     if not allowed_types:
         allowed_types = ['group', 'supergroup']
     
+    # Early return if no chat available
     if not update.effective_chat:
         return False
         
     chat_type: str = update.effective_chat.type
     
+    # Chat type is allowed
     if chat_type in allowed_types:
         return True
     
+    # Send notification for private chats
     if notify and update.effective_message and chat_type == 'private':
         update.effective_message.reply_text('Эта команда доступна только в группах')
     
@@ -372,89 +386,112 @@ def challange_hash(user_id: int, chat_id: int, join_msgid: int) -> str:
 @run_async
 @collect_error
 def ban_user(update: Update, context: CallbackContext) -> None:
+    """
+    Блокирует пользователя по команде администратора.
+    Работает как для обычных сообщений, так и для сообщений о присоединении.
+    """
     if not update.message:
         return
         
-    chat_type: str = update.effective_chat.type
-    if chat_type in ('private', 'channel'):
-        if chat_type == 'private':
-            update.message.reply_text('Эта команда доступна только в группах')
+    # Проверяем тип чата
+    if not check_chat_type(update, ['group', 'supergroup']):
         return
         
-    if update.message.from_user.id not in getAdminIds(context.bot, update.message.chat.id):
+    # Проверяем права администратора
+    chat_id = update.message.chat.id
+    if update.message.from_user.id not in getAdminIds(context.bot, chat_id):
         return
-    if not (repl_msg := update.message.reply_to_message):
+        
+    # Проверяем наличие ответа на сообщение
+    repl_msg = update.message.reply_to_message
+    if not repl_msg:
         update.message.reply_text("Пожалуйста, ответьте на сообщение пользователя.")
         return
+        
+    # Определяем ID пользователей для блокировки
+    user_ids = []
+    
     if repl_msg.new_chat_members:
+        # Если это сообщение о новых участниках
         user_ids = [user.id for user in repl_msg.new_chat_members]
+    elif repl_msg.from_user.id == context.bot.id:
+        # Если это сообщение от бота (проверка CAPTCHA)
+        try:
+            if (
+                (rmarkup := repl_msg.reply_markup) and 
+                (kbd := rmarkup.inline_keyboard) and
+                isinstance((btn := kbd[0][0]), InlineKeyboardButton) and 
+                (data := btn.callback_data) and
+                data.startswith('clg ')
+            ):
+                data_parts = data.split(' ')
+                if len(data_parts) in (3, 4):
+                    user_ids = [int(data_parts[1])]
+        except Exception:
+            user_ids = []
+            print_traceback(debug=DEBUG)
     else:
-        if repl_msg.from_user.id == context.bot.id:
-            # trying to be user friendly but reqiures a lot more code :(
-            try:
-                assert (rmarkup := repl_msg.reply_markup) and (kbd := rmarkup.inline_keyboard) \
-                    and type((btn := kbd[0][0])) is InlineKeyboardButton and (data := btn.callback_data)
-                assert data.startswith('clg ')
-                data = data.split(' ')
-                if not len(data) in (3,4):
-                    raise RuntimeError
-                user_ids = [int(data[1]),]
-            except AssertionError:
-                user_ids = list()
-            except Exception:
-                user_ids = list()
-                print_traceback(debug=DEBUG)
-        else:
-            user_ids = [repl_msg.from_user.id,]
-    chat_id: int = update.message.chat.id
-    user_ids: List[int] = [uid for uid in user_ids if uid not in getAdminIds(context.bot, chat_id)]
+        # Если это обычное сообщение от пользователя
+        user_ids = [repl_msg.from_user.id]
+    
+    # Исключаем администраторов из списка блокировки
+    user_ids = [uid for uid in user_ids if uid not in getAdminIds(context.bot, chat_id)]
     if not user_ids:
         update.message.reply_text("Невозможно заблокировать администратора.")
         return
-    u_mgr: UserManager = context.chat_data.setdefault('u_mgr', UserManager(chat_id))
-    fldlock: Lock = FLD_LOCKS.setdefault(chat_id, Lock())
+    
+    # Блокируем каждого пользователя в списке
+    u_mgr = context.chat_data.setdefault('u_mgr', UserManager(chat_id))
+    fldlock = FLD_LOCKS.setdefault(chat_id, Lock())
+    
     for user_id in user_ids:
         rest_user = u_mgr.get(user_id)
+        
         if not rest_user:
-            # The user has no pending challenge
+            # Пользователь не имеет ожидающей проверки - просто блокируем
             kick_user(context, chat_id, user_id, reason="explicitly kicked")
-            sto_msgs: List[Tuple[int, int, int]] = context.chat_data.get('stored_messages', list())
-            msgids_to_delete: Set[int] = set([u_m_t[1] for u_m_t in sto_msgs if u_m_t[0] == user_id])
+            
+            # Удаляем его сообщения
+            sto_msgs = context.chat_data.get('stored_messages', [])
+            msgids_to_delete = set(u_m_t[1] for u_m_t in sto_msgs if u_m_t[0] == user_id)
             msgids_to_delete.add(repl_msg.message_id)
-            for _mid in msgids_to_delete:
-                delete_message(context, chat_id, _mid)
+            
+            for mid in msgids_to_delete:
+                delete_message(context, chat_id, mid)
         else:
-            # Remove old job first, then take action
-            mjobs: tuple = context.job_queue.get_jobs_by_name(challange_hash(rest_user.user_id, chat_id, rest_user.join_msgid))
-            if len(mjobs) == 1:
-                mjob: Job = mjobs[0]
-                mjob.schedule_removal()
-            else:
+            # Пользователь имеет ожидающую проверку - сначала удаляем задачу проверки
+            job_hash = challange_hash(rest_user.user_id, chat_id, rest_user.join_msgid)
+            mjobs = context.job_queue.get_jobs_by_name(job_hash)
+            
+            if mjobs:
                 for mjob in mjobs:
                     mjob.schedule_removal()
-                logger.error(f'There is {len(mjobs)} pending job(s) for {rest_user.user_id} in the group {chat_id}')
-                if DEBUG:
-                    try:
-                        raise Exception
-                    except Exception:
+                
+                if len(mjobs) > 1:
+                    logger.error(f'Найдено {len(mjobs)} ожидающих задач для {rest_user.user_id} в группе {chat_id}')
+                    if DEBUG:
                         print_traceback(debug=DEBUG)
-            # ban user
+            
+            # Блокируем пользователя
             kick_user(context, chat_id, user_id, reason="explicitly kicked before challenge")
-            # delete join msg and challenge message
+            
+            # Удаляем сообщения о присоединении и проверке
             u_mgr.pop(rest_user.user_id)
+            
             if rest_user.flooding:
-                fldlock.acquire()
-                try:
+                with fldlock:
                     if len(u_mgr._fldusers) == 0 and u_mgr.fldmsg_id:
                         delete_message(context, chat_id=chat_id, message_id=u_mgr.fldmsg_id)
                         u_mgr.fldmsg_id = None
-                finally:
-                    fldlock.release()
             else:
                 delete_message(context, chat_id=chat_id, message_id=rest_user.clg_msgid)
+            
             delete_message(context, chat_id=chat_id, message_id=rest_user.join_msgid)
+    
+    # Удаляем сообщение с командой через 2 секунды
     def delete_notice(_: CallbackContext) -> None:
         delete_message(context, chat_id=chat_id, message_id=update.message.message_id)
+    
     context.job_queue.run_once(delete_notice, 2)
 
 @run_async
@@ -1001,56 +1038,72 @@ def new_members(update: Update, context: CallbackContext) -> None:
                 simple_challenge(context, chat_id, user, invite_user, update.effective_message.message_id)
 
 def do_garbage_collection(context: CallbackContext) -> None:
-    u_freed:   int = 0
-    m_freed:   int = 0
-    u_checked: int = 0
-    m_checked: int = 0
+    """
+    Периодическая очистка устаревших данных в памяти бота.
+    Удаляет старые сообщения и пользователей из хранилища для экономии памяти.
+    """
+    u_freed = m_freed = u_checked = m_checked = 0
+    current_time = int(time())
+    expiry_time = 7200  # 2 часа в секундах
+    
     all_chat_data = updater.dispatcher.chat_data
-    logger.debug('gc: check for abandoned keys')
+    logger.debug('Начало очистки памяти: проверка устаревших ключей')
+    
+    # Удаление устаревших ключей
     for chat_id in all_chat_data:
-        for key in [k for k in all_chat_data[chat_id]]:
-            if key in ('my_msg', 'rest_users'):
-                d = all_chat_data[chat_id].pop(key, None)
-                logger.warning(f'Update pickle: Removed {{{key}: {d}}} for {chat_id}')
-    logger.debug('gc: reinit old versions of u_mgr')
-    for chat_id in all_chat_data:
-        u_mgr: UserManager = all_chat_data[chat_id].get('u_mgr', None)
+        chat_data = all_chat_data[chat_id]
+        
+        # Удаление старых форматов данных
+        for key in ('my_msg', 'rest_users'):
+            if key in chat_data:
+                d = chat_data.pop(key, None)
+                logger.warning(f'Обновление формата данных: Удален {{{key}: {d}}} для чата {chat_id}')
+        
+        # Проверка версии UserManager
+        u_mgr = chat_data.get('u_mgr')
         if u_mgr and u_mgr._cver != u_mgr.ver:
-            all_chat_data[chat_id].pop('u_mgr', None)
-            logger.warning(f'Update u_mgr: reinit {u_mgr._cver} to {u_mgr.ver} for {chat_id}')
+            chat_data.pop('u_mgr', None)
+            logger.warning(f'Обновление u_mgr: реинициализация с {u_mgr._cver} до {u_mgr.ver} для чата {chat_id}')
             del u_mgr
-    logger.debug('gc: check for outdated rest_users and sto_msgs')
-    for chat_id in all_chat_data:
-        u_mgr: UserManager = all_chat_data[chat_id].get('u_mgr', None)
+        
+        # Очистка старых пользователей
+        u_mgr = chat_data.get('u_mgr')
         if u_mgr:
-            for _ulist in (u_mgr._nfusers, u_mgr._fldusers):
-                for k in (_culist := _ulist.copy()):
+            for user_list in (u_mgr._nfusers, u_mgr._fldusers):
+                users_to_remove = []
+                
+                # Проверка всех пользователей
+                for user_id, user_data in user_list.items():
                     u_checked += 1
-                    _u = _culist.get(k, None)
-                    t = _u.time if _u else 0
-                    if int(time()) - t > 7200:
-                        _ulist.pop(k, None)
-                        u_freed += 1
-        sto_msgs: list = all_chat_data[chat_id].get('stored_messages', None)
-        if type(sto_msgs) is list:
-            to_rm = list()
+                    if user_data and current_time - user_data.time > expiry_time:
+                        users_to_remove.append(user_id)
+                
+                # Удаление отмеченных пользователей
+                for user_id in users_to_remove:
+                    user_list.pop(user_id, None)
+                    u_freed += 1
+        
+        # Очистка старых сообщений
+        sto_msgs = chat_data.get('stored_messages')
+        if isinstance(sto_msgs, list):
+            msgs_to_remove = []
             try:
                 for item in sto_msgs:
                     m_checked += 1
-                    if len(item) == 3:
-                        stime = item[2]
-                        if int(time()) - stime > 7200:
-                            to_rm.append(item)
+                    if len(item) == 3 and current_time - item[2] > expiry_time:
+                        msgs_to_remove.append(item)
+                        
+                # Удаление отмеченных сообщений
+                for item in msgs_to_remove:
+                    sto_msgs.remove(item)
+                    m_freed += 1
             except Exception:
                 print_traceback(debug=DEBUG)
-            for item in to_rm:
-                m_freed += 1
-                try:
-                    sto_msgs.remove(item)
-                except Exception:
-                    print_traceback(debug=DEBUG)
-    logger.info((f'Scheduled garbage collection checked {u_checked} users, {m_checked} messages, '
-                 f'freed {u_freed} users, {m_freed} messages.'))
+    
+    logger.info(
+        f'Очистка памяти: проверено {u_checked} пользователей, {m_checked} сообщений; '
+        f'освобождено {u_freed} пользователей, {m_freed} сообщений.'
+    )
 
 @run_async
 @collect_error
@@ -1100,22 +1153,25 @@ if __name__ == '__main__':
     # Обработчики системных сообщений
     updater.dispatcher.add_handler(MessageHandler(Filters.status_update.new_chat_members, new_members))
     updater.dispatcher.add_handler(MessageHandler(Filters.status_update.left_chat_member, left_member))
-    
-    # Новые обработчики для других системных сообщений
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.new_chat_title, service_message))
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.new_chat_photo, service_message))
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.delete_chat_photo, service_message))
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.pinned_message, service_message))
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.chat_created, service_message))
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.message_auto_delete_timer_changed, service_message))
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.connected_website, service_message))
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.proximity_alert_triggered, service_message))
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.migrate, service_message))
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.voice_chat_scheduled, service_message))
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.voice_chat_started, service_message))
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.voice_chat_ended, service_message))
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.voice_chat_participants_invited, service_message))
-    
+
+    # Объединенный обработчик всех остальных типов системных сообщений
+    service_message_filter = (
+        Filters.status_update.new_chat_title |
+        Filters.status_update.new_chat_photo |
+        Filters.status_update.delete_chat_photo |
+        Filters.status_update.pinned_message |
+        Filters.status_update.chat_created |
+        Filters.status_update.message_auto_delete_timer_changed |
+        Filters.status_update.connected_website |
+        Filters.status_update.proximity_alert_triggered |
+        Filters.status_update.migrate |
+        Filters.status_update.voice_chat_scheduled |
+        Filters.status_update.voice_chat_started |
+        Filters.status_update.voice_chat_ended |
+        Filters.status_update.voice_chat_participants_invited
+    )
+    updater.dispatcher.add_handler(MessageHandler(service_message_filter, service_message))
+
     # Обработчик обычных сообщений должен быть последним
     updater.dispatcher.add_handler(MessageHandler(InvertedFilter(Filters.status_update & \
                                                   Filters.update.channel_posts), new_messages))

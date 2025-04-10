@@ -32,6 +32,7 @@ from hashlib import md5, sha256
 from threading import Lock
 
 
+
 logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('antispambot')
 
@@ -49,13 +50,32 @@ def get_gitver() -> str:
     except Exception:
         ver: str = "Unknown"
     return ver
-VER: str = get_gitver()
+VER: str = "1.5.0"
 
 def error_callback(update: Update, context:CallbackContext) -> None:
     error: Exception = context.error
     try:
         raise error
+    except Unauthorized:
+        # ошибки, связанные с отсутствием разрешений
+        logger.warning(f'Unauthorized error: {error}')
+    except BadRequest as e:
+        # ошибки запросов к Telegram API
+        if 'There are no administrators in the private chat' in str(e):
+            # Известная ошибка, которую мы уже исправили
+            logger.debug(f'BadRequest в приватном чате: {e}')
+        else:
+            logger.warning(f'BadRequest: {e}')
+            if update:
+                logger.info(f'Update: {update}')
+    except TimedOut:
+        # слишком долгое ожидание ответа от Telegram
+        logger.warning(f'TimedOut: {error}')
+    except NetworkError:
+        # другие проблемы с сетью
+        logger.warning(f'NetworkError: {error}')
     except Exception:
+        # любые другие ошибки
         print_traceback(debug=DEBUG)
 
 def collect_error(func: Callable) -> Callable:
@@ -84,6 +104,30 @@ def filter_old_updates(func: Callable[[Update, CallbackContext], Callable]) -> C
             return func(update, context, *args, **kwargs)
     return wrapped
 
+def check_chat_type(update: Update, allowed_types: List[str] = None, notify: bool = True) -> bool:
+    '''
+    Проверяет тип чата и отправляет сообщение, если он не подходит
+    
+    :param update: объект Update
+    :param allowed_types: список разрешенных типов чатов ('private', 'group', 'supergroup', 'channel')
+    :param notify: отправлять ли уведомление если тип не разрешен
+    :return: True если тип чата разрешен, иначе False
+    '''
+    if not allowed_types:
+        allowed_types = ['group', 'supergroup']
+    
+    if not update.effective_chat:
+        return False
+        
+    chat_type: str = update.effective_chat.type
+    
+    if chat_type in allowed_types:
+        return True
+    
+    if notify and update.effective_message and chat_type == 'private':
+        update.effective_message.reply_text('Эта команда доступна только в группах')
+    
+    return False
 
 def fName(user: User, atuser: bool = True, markdown: bool = True) -> str:
     name: str = user.full_name
@@ -139,6 +183,34 @@ def start(update: Update, context: CallbackContext) -> None:
                                 'и предоставьте права на блокировку пользователей.\n\n'
                                 'Администраторы могут использовать /settings для настройки.\n'
                                 'Используйте /ban для блокировки пользователей.'))
+
+@run_async
+@collect_error
+@filter_old_updates
+def help_command(update: Update, context: CallbackContext) -> None:
+    help_text = f"🤖 AntiSpamBot v{VER}\n\n"
+    
+    # Добавляем немного разный текст в зависимости от типа чата
+    if update.effective_chat.type == 'private':
+        help_text += "ℹ️ Я работаю в группах, добавьте меня туда и сделайте администратором!\n\n"
+    
+    help_text += "📝 Доступные команды:\n\n"
+    help_text += "• /start - Показать приветственное сообщение и информацию о функциях бота\n"
+    help_text += "• /help - Показать это сообщение\n"
+    help_text += "• /source - Показать ссылку на исходный код и версию бота\n"
+    help_text += "• /settings - Открыть меню настроек (только для администраторов)\n"
+    help_text += "• /admins или /admin - Упомянуть всех администраторов группы\n"
+    help_text += "• /ban - Заблокировать пользователя (только для администраторов)\n"
+    help_text += "• /cancel - Отменить процесс настройки (только для администраторов)\n\n"
+    help_text += "🔒 Основные функции:\n"
+    help_text += "• Проверка новых пользователей с помощью CAPTCHA\n"
+    help_text += "• Автоматическая блокировка не прошедших проверку\n"
+    help_text += "• Подтверждение новых ботов администраторами\n"
+    help_text += "• Защита от флуда при массовом присоединении\n"
+    help_text += "• Удаление системных сообщений\n\n"
+    help_text += "⚙️ Настройки доступны через команду /settings"
+    
+    update.message.reply_text(help_text)
 
 @run_async
 @collect_error
@@ -302,8 +374,13 @@ def challange_hash(user_id: int, chat_id: int, join_msgid: int) -> str:
 def ban_user(update: Update, context: CallbackContext) -> None:
     if not update.message:
         return
-    if update.effective_chat.type in ('private', 'channel'):
+        
+    chat_type: str = update.effective_chat.type
+    if chat_type in ('private', 'channel'):
+        if chat_type == 'private':
+            update.message.reply_text('Эта команда доступна только в группах')
         return
+        
     if update.message.from_user.id not in getAdminIds(context.bot, update.message.chat.id):
         return
     if not (repl_msg := update.message.reply_to_message):
@@ -662,10 +739,14 @@ def at_admins(update: Update, context: CallbackContext) -> None:
         logger.debug(f"At_admin sent from {update.message.from_user.id} {chat_id}")
 
 def write_settings(update: Update, context: CallbackContext) -> None:
+    chat_type: str = update.message.chat.type
+    if chat_type in ('private', 'channel'):
+        return
+        
     settings_call = context.chat_data.get('settings_call', None)
     if settings_call is None:
         return
-    if update.message.from_user.id not in getAdminIds(context.bot, update.message.chat_id):
+    if update.message.from_user.id not in getAdminIds(context.bot, update.message.chat.id):
         return
     try:
         lasttime = float(settings_call[0])
@@ -715,6 +796,13 @@ def settings_menu(update: Update, context: CallbackContext, additional_text: str
 @collect_error
 @filter_old_updates
 def settings_cancel(update: Update, context: CallbackContext) -> None:
+    chat_type: str = update.message.chat.type
+    if chat_type == 'channel':
+        return
+    elif chat_type == 'private':
+        update.message.reply_text('Настройки доступны только в группах')
+        return
+        
     if update.message.from_user.id in getAdminIds(context.bot, update.message.chat.id):
         settings_call = context.chat_data.get('settings_call', None)
         if settings_call:
@@ -999,6 +1087,7 @@ if __name__ == '__main__':
     updater.job_queue.run_repeating(do_garbage_collection, GARBAGE_COLLECTION_INTERVAL, first=5)
     updater.dispatcher.add_error_handler(error_callback)
     updater.dispatcher.add_handler(CommandHandler('start', start))
+    updater.dispatcher.add_handler(CommandHandler('help', help_command))
     updater.dispatcher.add_handler(CommandHandler('source', source))
     updater.dispatcher.add_handler(CommandHandler('admins', at_admins))
     updater.dispatcher.add_handler(CommandHandler('admin', at_admins))

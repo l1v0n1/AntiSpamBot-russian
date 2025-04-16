@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from re import compile
-from utils import find_cjk_letters, print_traceback
 
 MAX_SCORE = 100
 ACCEPTABLE_CJK_LENGTH = 10
@@ -29,6 +28,7 @@ for r in RULES:
     r['compiled'] = getattr(compile(r['regex']), r['type'])
 
 def _length_score(full_name: str) -> int:
+    from utils import find_cjk_letters, print_traceback
     try:
         num_cjk = len(find_cjk_letters(full_name))
     except Exception:

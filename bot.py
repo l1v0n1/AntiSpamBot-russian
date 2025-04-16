@@ -26,7 +26,7 @@ from telegram.error import (TelegramError, Unauthorized, BadRequest,
                             TimedOut, ChatMigrated, NetworkError)
 
 from mwt import MWT
-from utils import print_traceback, find_cjk_letters
+from utils import print_traceback, find_cjk_letters, is_spam_message, is_suspect_user
 from random import choice, randint, shuffle
 from hashlib import md5, sha256
 from threading import Lock
@@ -174,7 +174,6 @@ def getAdminUsernames(bot: Bot, chat_id: int, markdown: bool = False) -> List[st
                 admins.append(chat_member.user.username)
     return admins
 
-@run_async
 @collect_error
 @filter_old_updates
 def start(update: Update, context: CallbackContext) -> None:
@@ -198,7 +197,6 @@ def start(update: Update, context: CallbackContext) -> None:
                                 'Администраторы могут использовать /settings для настройки.\n'
                                 'Используйте /ban для блокировки пользователей.'))
 
-@run_async
 @collect_error
 @filter_old_updates
 def help_command(update: Update, context: CallbackContext) -> None:
@@ -226,7 +224,6 @@ def help_command(update: Update, context: CallbackContext) -> None:
     
     update.message.reply_text(help_text)
 
-@run_async
 @collect_error
 @filter_old_updates
 def source(update: Update, context: CallbackContext) -> None:
@@ -383,7 +380,6 @@ def challange_hash(user_id: int, chat_id: int, join_msgid: int) -> str:
     identity = hash(''.join(hashes))
     return str(identity)
 
-@run_async
 @collect_error
 def ban_user(update: Update, context: CallbackContext) -> None:
     """
@@ -494,7 +490,6 @@ def ban_user(update: Update, context: CallbackContext) -> None:
     
     context.job_queue.run_once(delete_notice, 2)
 
-@run_async
 @collect_error
 def challenge_verification(update: Update, context: CallbackContext) -> None:
     bot: Bot = context.bot
@@ -750,7 +745,6 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
                       f"the group {chat_id}{' [bot]' if user.is_bot else ''}"))
 
 
-@run_async
 @collect_error
 @filter_old_updates
 def at_admins(update: Update, context: CallbackContext) -> None:
@@ -772,7 +766,7 @@ def at_admins(update: Update, context: CallbackContext) -> None:
         admins: List[str] = getAdminUsernames(bot, chat_id, markdown=True)
         if admins:
             update.message.reply_text("  ".join(admins), parse_mode='Markdown')
-        context.chat_data["last_at_admins"]: float = time()
+        context.chat_data["last_at_admins"] = time()
         logger.debug(f"At_admin sent from {update.message.from_user.id} {chat_id}")
 
 def write_settings(update: Update, context: CallbackContext) -> None:
@@ -812,7 +806,6 @@ def write_settings(update: Update, context: CallbackContext) -> None:
     else:
         settings_menu(update, context, additional_text="Ваш ввод некорректен, попробуйте еще раз\n\n")
 
-@run_async
 @collect_error
 @filter_old_updates
 def settings_menu(update: Update, context: CallbackContext, additional_text: str = '') -> None:
@@ -829,7 +822,6 @@ def settings_menu(update: Update, context: CallbackContext, additional_text: str
         update.message.reply_text(text=f"{additional_text}Выберите настройку",
                                   reply_markup=InlineKeyboardMarkup(buttons))
 
-@run_async
 @collect_error
 @filter_old_updates
 def settings_cancel(update: Update, context: CallbackContext) -> None:
@@ -848,7 +840,6 @@ def settings_cancel(update: Update, context: CallbackContext) -> None:
         else:
             update.message.reply_text('Нет активных настроек для отмены')
 
-@run_async
 @collect_error
 def settings_callback(update: Update, context: CallbackContext) -> None:
     user: User = update.callback_query.from_user
@@ -976,7 +967,6 @@ def settings_callback(update: Update, context: CallbackContext) -> None:
     else:
         update.callback_query.answer()
 
-@run_async
 @collect_error
 @filter_old_updates
 def new_messages(update: Update, context: CallbackContext) -> None:
@@ -989,10 +979,46 @@ def new_messages(update: Update, context: CallbackContext) -> None:
     sto_msgs.append((update.effective_user.id, update.effective_message.message_id, int(time())))
     while len(sto_msgs) > STORE_CHAT_MESSAGES:
         sto_msgs.pop(0)
+    # --- СПАМ/РЕКЛАМА ---
+    msg = update.effective_message
+    admin_ids = getAdminIds(context.bot, msg.chat_id)
+    user_id = update.effective_user.id
+    is_admin = user_id in admin_ids
+    suspect = False
+    reason = ''
+    if not is_admin:
+        # Проверка текста сообщения
+        if msg and msg.text and is_spam_message(msg.text):
+            suspect = True
+            reason = 'spam text'
+        # Проверка имени пользователя
+        elif is_suspect_user(update.effective_user):
+            suspect = True
+            reason = 'suspect name'
+    if suspect:
+        logger.info(f"Spam detected from user {user_id} in chat {msg.chat_id} ({reason})")
+        # Удаляем все сообщения пользователя за последние 2 часа
+        now = int(time())
+        MSG_DELETE_WINDOW = 2 * 60 * 60  # 2 часа
+        msgids_to_delete = [m_id for u_id, m_id, t in sto_msgs if u_id == user_id and now - t < MSG_DELETE_WINDOW]
+        msgids_to_delete.append(msg.message_id)
+        for mid in set(msgids_to_delete):
+            delete_message(context, msg.chat_id, mid)
+        # Учёт нарушений
+        spam_violations = context.chat_data.setdefault('spam_violations', dict())
+        spam_violations[user_id] = spam_violations.get(user_id, 0) + 1
+        # Баним при повторном нарушении
+        if spam_violations[user_id] >= 2:
+            restrict_user(context, msg.chat_id, user_id, extra=' [spam ban]')
+            kick_user(context, msg.chat_id, user_id, reason='Repeated spam')
+            logger.info(f"User {user_id} banned for repeated spam in chat {msg.chat_id}")
+        else:
+            restrict_user(context, msg.chat_id, user_id, extra=' [spam detected]')
+        return
+    # --- END СПАМ ---
     if update.message and update.message.text:
         write_settings(update, context)
 
-@run_async
 @collect_error
 @filter_old_updates
 def left_member(update: Update, context: CallbackContext) -> None:
@@ -1011,10 +1037,10 @@ def left_member(update: Update, context: CallbackContext) -> None:
     else:
         logger.debug(f'Not deleting left_member message {msg_id} for {chat_id}')
 
-@run_async
 @collect_error
 @filter_old_updates
 def new_members(update: Update, context: CallbackContext) -> None:
+    logger.info(f"[new_members] called: chat_id={getattr(update.message, 'chat_id', None)}, chat_type={getattr(update.message.chat, 'type', None)}, new_chat_members={getattr(update.message, 'new_chat_members', None)}")
     if not (update.message and update.message.chat):
         return
     chat_type: str = update.message.chat.type
@@ -1105,7 +1131,6 @@ def do_garbage_collection(context: CallbackContext) -> None:
         f'освобождено {u_freed} пользователей, {m_freed} сообщений.'
     )
 
-@run_async
 @collect_error
 @filter_old_updates
 def service_message(update: Update, context: CallbackContext) -> None:
@@ -1139,20 +1164,20 @@ if __name__ == '__main__':
     updater.job_queue.start()
     updater.job_queue.run_repeating(do_garbage_collection, GARBAGE_COLLECTION_INTERVAL, first=5)
     updater.dispatcher.add_error_handler(error_callback)
-    updater.dispatcher.add_handler(CommandHandler('start', start))
-    updater.dispatcher.add_handler(CommandHandler('help', help_command))
-    updater.dispatcher.add_handler(CommandHandler('source', source))
-    updater.dispatcher.add_handler(CommandHandler('admins', at_admins))
-    updater.dispatcher.add_handler(CommandHandler('admin', at_admins))
-    updater.dispatcher.add_handler(CommandHandler('settings', settings_menu))
-    updater.dispatcher.add_handler(CommandHandler('cancel', settings_cancel))
-    updater.dispatcher.add_handler(CommandHandler('ban', ban_user))
-    updater.dispatcher.add_handler(CallbackQueryHandler(challenge_verification, pattern=r'clg'))
-    updater.dispatcher.add_handler(CallbackQueryHandler(settings_callback, pattern=r'settings'))
+    updater.dispatcher.add_handler(CommandHandler('start', start, run_async=True))
+    updater.dispatcher.add_handler(CommandHandler('help', help_command, run_async=True))
+    updater.dispatcher.add_handler(CommandHandler('source', source, run_async=True))
+    updater.dispatcher.add_handler(CommandHandler('admins', at_admins, run_async=True))
+    updater.dispatcher.add_handler(CommandHandler('admin', at_admins, run_async=True))
+    updater.dispatcher.add_handler(CommandHandler('settings', settings_menu, run_async=True))
+    updater.dispatcher.add_handler(CommandHandler('cancel', settings_cancel, run_async=True))
+    updater.dispatcher.add_handler(CommandHandler('ban', ban_user, run_async=True))
+    updater.dispatcher.add_handler(CallbackQueryHandler(challenge_verification, pattern=r'clg', run_async=True))
+    updater.dispatcher.add_handler(CallbackQueryHandler(settings_callback, pattern=r'settings', run_async=True))
     
     # Обработчики системных сообщений
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.new_chat_members, new_members))
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.left_chat_member, left_member))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.new_chat_members, new_members, run_async=True))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.left_chat_member, left_member, run_async=True))
 
     # Объединенный обработчик всех остальных типов системных сообщений
     service_message_filter = (
@@ -1170,11 +1195,11 @@ if __name__ == '__main__':
         Filters.status_update.voice_chat_ended |
         Filters.status_update.voice_chat_participants_invited
     )
-    updater.dispatcher.add_handler(MessageHandler(service_message_filter, service_message))
+    updater.dispatcher.add_handler(MessageHandler(service_message_filter, service_message, run_async=True))
 
     # Обработчик обычных сообщений должен быть последним
     updater.dispatcher.add_handler(MessageHandler(InvertedFilter(Filters.status_update & \
-                                                  Filters.update.channel_posts), new_messages))
+                                                  Filters.update.channel_posts), new_messages, run_async=True))
     if USER_BOT_BACKEND:
         logger.info('Antispambot started with userbot backend.')
         try:

@@ -104,10 +104,19 @@ def unban_user(context: CallbackContext, chat_id: int, user_id: int, reason: str
 @retry_on_network_error
 def delete_message(context: CallbackContext, chat_id: int, message_id: int) -> bool:
     try:
+        # Проверка: не удалять слишком старые сообщения (старше 2 суток)
+        # Telegram API не позволяет удалять очень старые сообщения
+        # (можно добавить получение объекта сообщения и проверку даты, если нужно)
         if context.bot.delete_message(chat_id=chat_id, message_id=message_id):
             logger.debug(f"Deleted message {message_id} in the group {chat_id}")
         else:
             raise TelegramError('delete_message returned bad status')
+    except BadRequest as err:
+        if 'Message can\'t be deleted for everyone' in str(err):
+            logger.info(f"Cannot delete message {message_id} in the group {chat_id}: {err}")
+            return False
+        else:
+            logger.error(f"Cannot delete message {message_id} in the group {chat_id}, {err}")
     except NetworkError:
         raise
     except TelegramError as err:

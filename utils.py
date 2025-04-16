@@ -99,3 +99,83 @@ _CJKRE = __build_re()
 
 def find_cjk_letters(text: str) -> list:
     return _CJKRE.findall(text)
+
+def is_spam_message(text: str) -> bool:
+    """
+    Проверяет, является ли сообщение спамом или рекламой по ключевым словам и шаблонам.
+    Возвращает True, если сообщение похоже на спам/рекламу.
+    """
+    import re
+    # Ключевые слова и фразы для поиска рекламы/спама
+    spam_keywords = [
+        r'работа.{0,20}\d+\s*за',
+        r'есть\s*работа',
+        r'свяжитесь',
+        r'смен[аы]',
+        r'каждый день',
+        r'заработ(а|о)к',
+        r'подработк',
+        r'деньги',
+        r'выплаты',
+        r'перевод(ы|ы)',
+        r'вывод',
+        r'ставк[аи]',
+        r'казин[оа]',
+        r'инвестиц',
+        r'крипто',
+        r'услуг[аи]',
+        r'продам',
+        r'куплю',
+        r'реклама',
+        r'подписк',
+        r'подпишись',
+        r'ссылка',
+        r'http[s]?://',
+        r't\.me/',
+        r'@\w{3,}',
+        r'\d{4,}',
+        r'\+?\d{7,}',  # телефоны
+        r'\bjob\b', r'\bwork\b', r'\bearn\b', r'\bcrypto\b',
+        r'\bcasino\b', r'\bbonus\b', r'\bbet\b',
+        r'\bfree\b', r'\bsubscribe\b', r'\bchannel\b',
+        r'\bpromotion\b', r'\bdiscount\b',
+        r'\bguarantee\b', r'\bguaranteed\b',
+        r'\bоплата\b', r'\bзарплата\b',
+        r'\bдоставка\b', r'\bакция\b',
+        r'\bскидка\b', r'\bвыигрыш\b',
+        r'\bлотерея\b', r'\bлотто\b',
+        r'\bинвестиции\b', r'\bинвестируй\b',
+        r'\bставка\b', r'\bставки\b',
+        r'\bбот\b', r'\bбота\b',
+        r'\bботов\b',
+    ]
+    text_l = text.lower()
+    for pattern in spam_keywords:
+        if re.search(pattern, text_l):
+            return True
+    # Эвристика: много ссылок
+    if len(re.findall(r'http[s]?://', text_l)) > 1:
+        return True
+    # Эвристика: много цифр и коротких слов
+    if len(re.findall(r'\d{4,}', text_l)) > 0 and len(text_l.split()) < 20:
+        return True
+    # Эвристика: подозрительные шаблоны (телефоны, email)
+    if re.search(r'\+?\d{7,}', text_l):
+        return True
+    if re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text_l):
+        return True
+    return False
+
+# Новая функция для анализа имени пользователя через userfilter
+from userfilter import spam_score
+
+def is_suspect_user(user) -> bool:
+    """
+    Проверяет, подозрителен ли пользователь по имени/username (использует userfilter.spam_score).
+    user — объект telegram.User
+    """
+    full_name = (user.full_name if hasattr(user, 'full_name') else '')
+    if hasattr(user, 'username') and user.username:
+        full_name += ' @' + user.username
+    score = spam_score(full_name)
+    return score >= 80
